@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -158,19 +159,22 @@ func isControlPlaneNode(node *corev1.Node) bool {
 }
 
 // getSELinuxStatus determines SELinux status from node
+// Note: SELinux detection is limited from within containers.
+// This is a best-effort approach that checks node labels.
+// If not determinable, returns "unknown".
 func getSELinuxStatus(node *corev1.Node) string {
 	// Check node labels for SELinux information
-	if selinux, ok := node.Labels["security.alpha.kubernetes.io/selinux"]; ok && selinux == "enabled" {
-		return "enabled"
+	// This label is set by some Kubernetes distributions
+	if selinux, ok := node.Labels["security.alpha.kubernetes.io/selinux"]; ok {
+		if selinux == "enabled" {
+			return "enabled"
+		}
+		return "disabled"
 	}
 
-	// Try to infer from node annotations or system info
-	// This is a best-effort approach
-	if node.Status.NodeInfo.KernelVersion != "" {
-		return "unknown"
-	}
-
-	return "disabled"
+	// SELinux status cannot be reliably determined from within a container
+	// without host access or specific node labels
+	return "unknown"
 }
 
 // detectCNIPlugin attempts to detect the CNI plugin in use
@@ -182,16 +186,20 @@ func detectCNIPlugin(ctx context.Context, clientset *kubernetes.Clientset) (stri
 	}
 
 	for _, ds := range daemonSets.Items {
-		switch {
-		case contains(ds.Name, "canal"):
+		name := strings.ToLower(ds.Name)
+		if strings.Contains(name, "canal") {
 			return "canal", nil
-		case contains(ds.Name, "flannel"):
+		}
+		if strings.Contains(name, "flannel") {
 			return "flannel", nil
-		case contains(ds.Name, "calico"):
+		}
+		if strings.Contains(name, "calico") {
 			return "calico", nil
-		case contains(ds.Name, "cilium"):
+		}
+		if strings.Contains(name, "cilium") {
 			return "cilium", nil
-		case contains(ds.Name, "weave"):
+		}
+		if strings.Contains(name, "weave") {
 			return "weave", nil
 		}
 	}
@@ -208,10 +216,11 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	}
 
 	for _, deploy := range deployments.Items {
-		switch {
-		case contains(deploy.Name, "nginx-ingress"), contains(deploy.Name, "rke2-ingress-nginx"):
+		name := strings.ToLower(deploy.Name)
+		if strings.Contains(name, "nginx-ingress") || strings.Contains(name, "rke2-ingress-nginx") {
 			return "rke2-ingress-nginx", nil
-		case contains(deploy.Name, "traefik"):
+		}
+		if strings.Contains(name, "traefik") {
 			return "traefik", nil
 		}
 	}
@@ -220,10 +229,11 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	daemonSets, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, ds := range daemonSets.Items {
-			switch {
-			case contains(ds.Name, "nginx-ingress"), contains(ds.Name, "rke2-ingress-nginx"):
+			name := strings.ToLower(ds.Name)
+			if strings.Contains(name, "nginx-ingress") || strings.Contains(name, "rke2-ingress-nginx") {
 				return "rke2-ingress-nginx", nil
-			case contains(ds.Name, "traefik"):
+			}
+			if strings.Contains(name, "traefik") {
 				return "traefik", nil
 			}
 		}
@@ -240,7 +250,6 @@ func sendTelemetryData(data *TelemetryData, endpoint string) error {
 	}
 
 	log.Printf("Sending telemetry data to %s", endpoint)
-	log.Printf("Data: %s", string(jsonData))
 
 	client := &http.Client{
 		Timeout: defaultTimeout,
@@ -264,21 +273,4 @@ func sendTelemetryData(data *TelemetryData, endpoint string) error {
 	}
 
 	return nil
-}
-
-// contains checks if a string contains a substring (case-insensitive)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		len(s) > len(substr) && (s[:len(substr)] == substr ||
-			s[len(s)-len(substr):] == substr ||
-			hasSubstring(s, substr)))
-}
-
-func hasSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
