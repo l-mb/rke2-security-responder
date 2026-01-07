@@ -20,6 +20,8 @@ import (
 const (
 	defaultTelemetryEndpoint = "https://telemetry.rke2.io/v1/telemetry"
 	defaultTimeout           = 30 * time.Second
+	maxRetries               = 3
+	retryDelay               = 2 * time.Second
 )
 
 // TelemetryData represents the structure of data to be sent
@@ -242,7 +244,7 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	return "none", nil
 }
 
-// sendTelemetryData sends the telemetry data to the endpoint
+// sendTelemetryData sends the telemetry data to the endpoint with retry logic
 func sendTelemetryData(data *TelemetryData, endpoint string) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -255,22 +257,39 @@ func sendTelemetryData(data *TelemetryData, endpoint string) error {
 		Timeout: defaultTimeout,
 	}
 
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt-1) * retryDelay
+			log.Printf("Retry attempt %d/%d after %v", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to send request: %w", err)
+			log.Printf("Attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			log.Printf("Attempt %d failed: %v", attempt, lastErr)
+			continue
+		}
+
+		// Success
+		log.Printf("Telemetry data sent successfully on attempt %d", attempt)
+		return nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
+	return lastErr
 }
