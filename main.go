@@ -17,6 +17,11 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+var (
+	// Version is set at build time via ldflags
+	Version = "dev"
+)
+
 const (
 	defaultTelemetryEndpoint = "https://telemetry.rke2.io/v1/telemetry"
 	defaultTimeout           = 30 * time.Second
@@ -32,7 +37,7 @@ type TelemetryData struct {
 }
 
 func main() {
-	log.Println("RKE2 Security Responder starting...")
+	log.Printf("RKE2 Security Responder %s starting...", Version)
 
 	// Check if telemetry is disabled
 	if os.Getenv("DISABLE_TELEMETRY") == "true" {

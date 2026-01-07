@@ -55,8 +55,29 @@ jobs:
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     steps:
     - uses: actions/checkout@v4
     
-    - name: Build Docker Image
-      run: docker build -t rke2-security-responder:test .
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker Image for ${{ matrix.arch }}
+      run: |
+        docker buildx build \
+          --platform linux/${{ matrix.arch }} \
+          --build-arg BUILDARCH=${{ matrix.arch }} \
+          --build-arg TAG=test \
+          --load \
+          -t rke2-security-responder:test-${{ matrix.arch }} \
+          .
+    
+    - name: Check image size
+      run: |
+        docker images rke2-security-responder:test-${{ matrix.arch }} --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
+

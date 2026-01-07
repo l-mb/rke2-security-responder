@@ -76,16 +76,28 @@ The component is packaged as a Helm chart with the following configurable values
 
 ### Building
 
-Build the Go binary:
+Build the Go binary with version information:
 
 ```bash
-go build -o security-responder main.go
+make build VERSION=v0.1.0
 ```
 
-Build the container image:
+Or directly with Go:
 
 ```bash
-docker build -t rancher/rke2-security-responder:dev .
+CGO_ENABLED=0 go build -ldflags "-s -w -X main.Version=v0.1.0" -trimpath -o security-responder main.go
+```
+
+Build the container image (uses `rancher/hardened-build-base` and `scratch` for minimal size):
+
+```bash
+make docker-build VERSION=v0.1.0 ARCH=amd64
+```
+
+Build multi-architecture images:
+
+```bash
+make docker-build-multi VERSION=v0.1.0
 ```
 
 ### Testing the Helm Chart

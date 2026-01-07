@@ -1,5 +1,13 @@
-# Build stage
-FROM golang:1.22-alpine AS builder
+# Build stage - using hardened build base similar to RKE2
+FROM rancher/hardened-build-base:v1.25.5b1 AS builder
+
+ARG BUILDARCH
+ARG TAG=v0.1.0
+ENV ARCH=${BUILDARCH:-amd64}
+
+RUN apk --no-cache add \
+    bash \
+    git
 
 WORKDIR /workspace
 
@@ -10,18 +18,34 @@ RUN go mod download
 # Copy source code
 COPY main.go ./
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o security-responder main.go
+# Build with hardening flags
+RUN CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=${ARCH} \
+    go build \
+    -ldflags "-s -w -X main.Version=${TAG}" \
+    -trimpath \
+    -o security-responder \
+    main.go
 
-# Final stage
-FROM alpine:3.19
+# Final stage - using scratch for minimal image size
+FROM scratch
 
-RUN apk --no-cache add ca-certificates
+# Add ca-certificates for HTTPS requests
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Add timezone data
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Add passwd for non-root user
+COPY --from=builder /etc/passwd /etc/passwd
 
 WORKDIR /
 
-COPY --from=builder /workspace/security-responder /security-responder
+COPY --from=builder /workspace/security-responder /usr/local/bin/security-responder
 
 USER 65532:65532
 
-ENTRYPOINT ["/security-responder"]
+ENTRYPOINT ["/usr/local/bin/security-responder"]
+
+

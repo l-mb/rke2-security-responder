@@ -3,11 +3,16 @@
 BINARY_NAME=security-responder
 DOCKER_REPO=rancher/rke2-security-responder
 VERSION?=v0.1.0
+ARCH?=amd64
 
 all: build
 
 build:
-	go build -o $(BINARY_NAME) main.go
+	CGO_ENABLED=0 go build \
+		-ldflags "-s -w -X main.Version=$(VERSION)" \
+		-trimpath \
+		-o $(BINARY_NAME) \
+		main.go
 
 test:
 	go test -v ./...
@@ -27,11 +32,24 @@ helm-template:
 		--namespace kube-system
 
 docker-build:
-	docker build -t $(DOCKER_REPO):$(VERSION) .
-	docker tag $(DOCKER_REPO):$(VERSION) $(DOCKER_REPO):latest
+	docker buildx build \
+		--platform linux/$(ARCH) \
+		--build-arg BUILDARCH=$(ARCH) \
+		--build-arg TAG=$(VERSION) \
+		--load \
+		-t $(DOCKER_REPO):$(VERSION)-$(ARCH) \
+		.
+
+docker-build-multi:
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--build-arg TAG=$(VERSION) \
+		-t $(DOCKER_REPO):$(VERSION) \
+		.
 
 fmt:
 	go fmt ./...
 
 vet:
 	go vet ./...
+
