@@ -1,2 +1,117 @@
 # rke2-security-responder
-RKE2 component for in-cluster CVE/security notifications
+
+RKE2 component for in-cluster CVE/security notifications and telemetry.
+
+## Overview
+
+The RKE2 Security Responder is a Kubernetes component that collects non-personally identifiable cluster metadata and optionally sends it to a telemetry endpoint. This helps RKE2 maintainers understand real-world adoption patterns and helps users stay informed about security updates.
+
+## Architecture
+
+Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/master/docs/adrs/010-security-responder.md), this component:
+
+- Runs as a CronJob in the `kube-system` namespace
+- Executes thrice daily (every 8 hours: `0 */8 * * *`)
+- Collects cluster metadata including:
+  - Kubernetes version
+  - Cluster UUID (based on kube-system namespace UID)
+  - Node counts (control plane vs agent nodes)
+  - CNI plugin in use
+  - Ingress controller in use
+  - Operating system information
+  - SELinux status
+- Sends data to a configurable telemetry endpoint
+- Fails gracefully in disconnected environments
+- Minimal resource overhead
+
+## Data Collection
+
+Example payload structure:
+
+```json
+{
+  "appVersion": "v1.31.6+rke2r1",
+  "extraTagInfo": {
+    "kubernetesVersion": "v1.31.6",
+    "clusteruuid": "53741f60-f208-48fc-ae81-8a969510a598"
+  },
+  "extraFieldInfo": {
+    "serverNodeCount": 3,
+    "agentNodeCount": 2,
+    "cni-plugin": "flannel",
+    "ingress-controller": "rke2-ingress-nginx",
+    "os": "ubuntu",
+    "selinux": "enabled"
+  }
+}
+```
+
+The `clusteruuid` is completely random (the UUID of the `kube-system` namespace) and does not expose any privacy concerns.
+
+## Configuration
+
+### Disabling the Security Responder
+
+To disable telemetry collection, add the following to your RKE2 configuration:
+
+```yaml
+# /etc/rancher/rke2/config.yaml
+disable:
+  - rke2-security-responder
+```
+
+### Helm Chart Values
+
+The component is packaged as a Helm chart with the following configurable values:
+
+- `enabled`: Whether the security responder is enabled (default: `true`)
+- `schedule`: CronJob schedule (default: `"0 */8 * * *"`)
+- `telemetry.endpoint`: Telemetry endpoint URL (default: `"https://telemetry.rke2.io/v1/telemetry"`)
+- `telemetry.disabled`: Disable telemetry via environment variable (default: `false`)
+- `image.repository`: Container image repository (default: `"rancher/rke2-security-responder"`)
+- `image.tag`: Container image tag (default: `"v0.1.0"`)
+- `resources`: Resource limits and requests
+
+## Development
+
+### Building
+
+Build the Go binary:
+
+```bash
+go build -o security-responder main.go
+```
+
+Build the container image:
+
+```bash
+docker build -t rancher/rke2-security-responder:dev .
+```
+
+### Testing the Helm Chart
+
+Lint the chart:
+
+```bash
+helm lint charts/rke2-security-responder
+```
+
+Template the chart:
+
+```bash
+helm template rke2-security-responder charts/rke2-security-responder \
+  --namespace kube-system
+```
+
+Install the chart:
+
+```bash
+helm install rke2-security-responder charts/rke2-security-responder \
+  --namespace kube-system \
+  --create-namespace
+```
+
+## License
+
+Apache 2.0 License. See [LICENSE](LICENSE) for full text.
+
