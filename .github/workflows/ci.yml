@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+    
+    - name: Build
+      run: go build -v ./...
+    
+    - name: Test
+      run: go test -v ./...
+    
+    - name: Vet
+      run: go vet ./...
+    
+    - name: Format check
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+          echo "Code is not formatted:"
+          gofmt -d .
+          exit 1
+        fi
+
+  helm:
+    name: Helm Chart Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.14.0'
+    
+    - name: Lint Helm Chart
+      run: helm lint charts/rke2-security-responder
+    
+    - name: Template Helm Chart
+      run: helm template test-release charts/rke2-security-responder --namespace kube-system
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker Image
+      run: docker build -t rke2-security-responder:test .
