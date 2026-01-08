@@ -33,5 +33,6 @@ go.work.sum
 
 # Build artifacts
 security-responder
+rke2-security-responder
 dist/
 bin/

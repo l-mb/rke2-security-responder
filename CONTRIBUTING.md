@@ -6,7 +6,7 @@ Thank you for your interest in contributing to the RKE2 Security Responder!
 
 ### Prerequisites
 
-- Go 1.25 or later
+- Go 1.22 or later
 - Docker (for building container images)
 - Helm 3.x (for chart development)
 - Kubernetes cluster (for testing)

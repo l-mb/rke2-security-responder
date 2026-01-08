@@ -1,6 +1,8 @@
 module github.com/rancher/rke2-security-responder
 
-go 1.25.5
+go 1.22.0
+
+toolchain go1.24.11
 
 require (
 	k8s.io/api v0.31.6
