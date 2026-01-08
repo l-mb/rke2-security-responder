@@ -7,7 +7,9 @@ ENV ARCH=${BUILDARCH:-amd64}
 
 RUN apk --no-cache add \
     bash \
-    git
+    git \
+    tzdata \
+    ca-certificates
 
 WORKDIR /workspace
 
@@ -34,10 +36,10 @@ FROM scratch
 # Add ca-certificates for HTTPS requests
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-# Add timezone data
+# Add timezone data (optional, for time operations)
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-# Add passwd for non-root user
+# Add passwd for non-root user (create minimal passwd file)
 COPY --from=builder /etc/passwd /etc/passwd
 
 WORKDIR /
@@ -47,5 +49,4 @@ COPY --from=builder /workspace/security-responder /usr/local/bin/security-respon
 USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/security-responder"]
-
 
