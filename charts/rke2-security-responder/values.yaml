@@ -24,8 +24,9 @@ image:
   tag: v0.1.5
   pullPolicy: IfNotPresent
 
-# CronJob schedule in UTC. Empty runs every 8 hours, at a minute and hour
-# offset that derive from the cluster UID, to spread the load on the endpoint.
+# CronJob schedule, in the time zone of kube-controller-manager. Empty runs
+# every 8 hours, at a minute and hour offset that derive from the cluster UID,
+# to spread the load on the endpoint.
 schedule: ""
 
 # Security check endpoint configuration

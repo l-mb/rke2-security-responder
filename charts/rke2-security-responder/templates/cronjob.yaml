@@ -7,7 +7,6 @@ metadata:
     {{- include "rke2-security-responder.labels" . | nindent 4 }}
 spec:
   schedule: {{ include "rke2-security-responder.schedule" . | quote }}
-  timeZone: Etc/UTC
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   concurrencyPolicy: Forbid

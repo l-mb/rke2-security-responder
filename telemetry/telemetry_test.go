@@ -139,13 +139,13 @@ func TestIsControlPlaneNode(t *testing.T) {
 // An empty nodeArgs omits the annotation.
 func newNode(name, nodeArgs string) *corev1.Node {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{}},
 		Status: corev1.NodeStatus{
 			NodeInfo: corev1.NodeSystemInfo{OperatingSystem: "linux", OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
 		},
 	}
 	if nodeArgs != "" {
-		node.Annotations = map[string]string{"rke2.io/node-args": nodeArgs}
+		node.Annotations["rke2.io/node-args"] = nodeArgs
 	}
 	return node
 }
@@ -161,6 +161,9 @@ func TestGetSELinuxStatus(t *testing.T) {
 		{"command line flag", `["server","--selinux","--write-kubeconfig-mode","0644"]`, "enabled"},
 		{"command line flag last", `["agent","--selinux"]`, "enabled"},
 		{"last value wins", `["server","--selinux","true","--selinux","false"]`, "disabled"},
+		{"single dash flag", `["server","-selinux","--cni","canal"]`, "enabled"},
+		{"single dash flag with value", `["agent","-selinux=false"]`, "disabled"},
+		{"option name as value", `["server","--node-name","selinux"]`, "disabled"},
 		{"option absent", `["server","--cni","cilium"]`, "disabled"},
 		{"no annotation", "", ""},
 		{"malformed annotation", `server --selinux`, ""},
@@ -183,6 +186,7 @@ func TestGetSELinuxStatus(t *testing.T) {
 		{"environment variable", `["server"]`, `{"RKE2_SELINUX":"true"}`, "enabled"},
 		{"argument overrides environment variable", `["server","--selinux","false"]`, `{"RKE2_SELINUX":"true"}`, "disabled"},
 		{"other environment variables", `["server"]`, `{"RKE2_TOKEN":"********"}`, "disabled"},
+		{"environment variable without node-args", "", `{"RKE2_SELINUX":"true"}`, ""},
 	}
 	for _, tt := range envTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -399,6 +403,54 @@ func TestCollect_CNIDetection(t *testing.T) {
 	}
 }
 
+// failRequests makes the fake clientset fail the requests for the resource
+// that match. A nil match fails all requests.
+func failRequests(clientset *fake.Clientset, resource string, match func(k8stesting.Action) bool) {
+	clientset.PrependReactor("*", resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return match == nil || match(action), nil, apierrors.NewServiceUnavailable("timeout")
+	})
+}
+
+func TestDetectCNIPlugin_PrefersKubeSystem(t *testing.T) {
+	plugin, version := detectCNIPlugin([]appsv1.DaemonSet{
+		*newDaemonSet("cattle-monitoring", "cilium-exporter", "example/cilium-exporter:v1.0.0"),
+		*newDaemonSet("kube-system", "rke2-canal", "rancher/hardened-calico:v3.26.0"),
+	})
+	if plugin != "canal" || version != "v3.26.0" {
+		t.Errorf("detectCNIPlugin() = %q, %q, want canal, v3.26.0", plugin, version)
+	}
+}
+
+func TestCollect_WorkloadListErrors(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		newDaemonSet("kube-system", "rke2-canal", "rancher/hardened-calico:v3.26.0"),
+		newDaemonSet("gpu-operator", "nvidia-device-plugin-daemonset", "nvcr.io/nvidia/k8s-device-plugin:v0.14.0"),
+		newDeployment("kube-system", "rke2-traefik", "rancher/hardened-traefik:v3.5.0"),
+		newIngressClass("nginx", "k8s.io/ingress-nginx", true),
+	)
+	for _, resource := range []string{"daemonsets", "deployments"} {
+		failRequests(clientset, resource, nil)
+	}
+
+	data, err := Collect(context.Background(), clientset, nil, "recommended")
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	for key, want := range map[string]string{
+		"cni-plugin":           "unknown",
+		"cni-version":          "unknown",
+		"gpu-operator":         "unknown",
+		"gpu-operator-version": "unknown",
+		"ingress-controller":   "ingress-nginx",
+		"ingress-version":      "unknown",
+	} {
+		if got := data.ExtraTagInfo[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestCollect_IngressDetection(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -408,6 +460,7 @@ func TestCollect_IngressDetection(t *testing.T) {
 		expectedVersion string
 	}{
 		{"nginx", "rke2-ingress-nginx-controller", "rancher/nginx-ingress-controller:v1.9.0", "rke2-ingress-nginx", "v1.9.0"},
+		{"legacy nginx chart", "rke2-ingress-nginx-nginx-ingress-controller", "rancher/nginx-ingress-controller:v0.35.0", "rke2-ingress-nginx", "v0.35.0"},
 		{"traefik", "traefik", "traefik:v2.10", "traefik", "v2.10"},
 		{"untagged", "traefik", "traefik", "traefik", "unknown"},
 	}
@@ -473,6 +526,8 @@ func TestCollect_IngressClass(t *testing.T) {
 		{"unknown controller skipped", []runtime.Object{custom, newIngressClass("nginx", "k8s.io/ingress-nginx", false)}, nil, "ingress-nginx", "unknown"},
 		{"unknown default class", []runtime.Object{newIngressClass("internal", "example.com/secret-ingress", true), newIngressClass("nginx", "k8s.io/ingress-nginx", false)}, nil, "other", "unknown"},
 		{"unknown controller only", []runtime.Object{custom}, nil, "other", "unknown"},
+		{"other nginx in kube-system", []runtime.Object{newIngressClass("nginx", "nginx.org/ingress-controller", true), newDeployment("kube-system", "ingress-nginx-ingress-controller", "nginx/nginx-ingress:5.2.0")}, nil, "f5-nginx", "unknown"},
+		{"daemonset outside kube-system ignored", []runtime.Object{newDaemonSet("traefik", "traefik", "traefik:v3.5.0")}, nil, "none", "none"},
 		{"bundled controller wins", []runtime.Object{newIngressClass("nginx", "k8s.io/ingress-nginx", true), newDaemonSet("kube-system", "rke2-traefik", "rancher/hardened-traefik:v3.5.0")}, nil, "traefik", "v3.5.0"},
 		{"list error", nil, apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "ingressclasses"}, "", nil), "unknown", "unknown"},
 	}
@@ -567,10 +622,12 @@ func TestCollect_RancherRole(t *testing.T) {
 	uuidEnv := corev1.EnvVar{Name: "CATTLE_INSTALL_UUID", Value: "install-uuid"}
 	cattleSystem := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}}
 	webhook := newDeployment("cattle-system", "rancher-webhook", "rancher/rancher-webhook:v0.8.1")
+	agent := newDeployment("cattle-system", "cattle-cluster-agent", "rancher/rancher-agent:v2.12.1", uuidEnv)
 	tests := []struct {
 		name        string
 		objs        []runtime.Object
 		dynObjs     []runtime.Object
+		failRes     string
 		wantManaged string
 		wantRole    string
 		wantVersion string
@@ -581,9 +638,8 @@ func TestCollect_RancherRole(t *testing.T) {
 			wantManaged: "false", wantRole: "none", wantVersion: "none", wantUUID: nil,
 		},
 		{
-			name: "downstream",
-			objs: []runtime.Object{cattleSystem, webhook,
-				newDeployment("cattle-system", "cattle-cluster-agent", "rancher/rancher-agent:v2.12.1", uuidEnv)},
+			name:        "downstream",
+			objs:        []runtime.Object{cattleSystem, webhook, agent},
 			wantManaged: "true", wantRole: "downstream", wantVersion: "v2.12.1", wantUUID: "install-uuid",
 		},
 		{
@@ -604,16 +660,40 @@ func TestCollect_RancherRole(t *testing.T) {
 			wantManaged: "true", wantRole: "server", wantVersion: "v2.12.1", wantUUID: nil,
 		},
 		{
+			name:        "hosted server",
+			objs:        []runtime.Object{cattleSystem, agent, newDeployment("cattle-system", "rancher", "rancher/rancher:v2.12.3")},
+			dynObjs:     []runtime.Object{newRancherSetting("install-uuid", "local-uuid")},
+			wantManaged: "true", wantRole: "server", wantVersion: "v2.12.3", wantUUID: "local-uuid",
+		},
+		{
 			name:        "no Rancher workload",
 			objs:        []runtime.Object{cattleSystem, webhook},
-			wantManaged: "true", wantRole: "unknown", wantVersion: "unknown", wantUUID: nil,
+			wantManaged: "unknown", wantRole: "unknown", wantVersion: "unknown", wantUUID: nil,
+		},
+		{
+			name:        "namespace read error",
+			objs:        []runtime.Object{cattleSystem, agent},
+			failRes:     "namespaces",
+			wantManaged: "unknown", wantRole: "unknown", wantVersion: "unknown", wantUUID: nil,
+		},
+		{
+			name:        "deployment list error",
+			objs:        []runtime.Object{cattleSystem, agent},
+			failRes:     "deployments",
+			wantManaged: "unknown", wantRole: "unknown", wantVersion: "unknown", wantUUID: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			objs := append(tt.objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}})
-			data, err := Collect(context.Background(), fake.NewClientset(objs...), newDynClient(tt.dynObjs...), "recommended")
+			clientset := fake.NewClientset(append(tt.objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}})...)
+			if tt.failRes != "" {
+				failRequests(clientset, tt.failRes, func(action k8stesting.Action) bool {
+					get, isGet := action.(k8stesting.GetAction)
+					return action.GetNamespace() == "cattle-system" || (isGet && get.GetName() == "cattle-system")
+				})
+			}
+			data, err := Collect(context.Background(), clientset, newDynClient(tt.dynObjs...), "recommended")
 			if err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}

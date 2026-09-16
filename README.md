@@ -24,17 +24,17 @@ Thank you!
 Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/master/docs/adrs/010-security-responder.md), this component:
 
 - Runs as a CronJob in the `kube-system` namespace
-- Executes thrice daily, every 8 hours in UTC. The minute and the hour offset derive from the cluster UUID, so clusters do not all report at the same time.
+- Executes thrice daily, every 8 hours. The minute and the hour offset derive from the cluster UUID, so clusters do not all report at the same time.
 - Collects cluster metadata including (depending on settings):
   - Kubernetes version
   - Cluster UUID (based on kube-system namespace UID)
   - Node counts, CPU (millicores), and memory (bytes) for control plane and agent nodes
-  - CNI plugin in use
-  - Ingress controller in use: the controller that RKE2 bundles, otherwise the controller of the default IngressClass (`other` for an unrecognized controller)
+  - CNI plugin in use: the first DaemonSet with a known CNI name, in `kube-system` first and then in all other namespaces
+  - Ingress controller in use: the controller that RKE2 bundles in `kube-system`. Otherwise, the controller of the default IngressClass, or of the first IngressClass with a known controller. The value is `other` for an unrecognized controller, `none` if no IngressClass exists, and `unknown` if the IngressClasses cannot be read. The version is known only for the bundled controller.
   - Operating system, OS image, kernel version, architecture (from the first node; a consistency flag indicates whether all nodes match)
   - SELinux setting of RKE2 (the `selinux` option: `enabled`, `disabled`, or `mixed` across nodes)
   - GPU node count, vendor, and operator (if present)
-  - Rancher Manager role (`downstream` when Rancher manages the cluster, `server` when the cluster runs Rancher), version, and install UUID
+  - Rancher Manager role, version, and install UUID. The role is `server` if the cluster runs Rancher, also if another Rancher manages the cluster. The role is `downstream` if Rancher manages the cluster. The role is `unknown` if `cattle-system` cannot be read or contains neither Rancher image. In that case, `rancher-managed` is also `unknown`.
   - Rancher Prime distribution flag and observed `system-default-registry` (read from HelmChart `spec.set`)
   - IP stack configuration (IPv4-only, IPv6-only, or dual-stack)
 - Sends data to a configurable endpoint
@@ -143,7 +143,7 @@ disable:
 The component is packaged as a Helm chart with the following configurable values:
 
 - `mode`: Collection mode - `"recommended"` (default) or `"minimal"`
-- `schedule`: CronJob schedule in UTC (default: `""`, every 8 hours at a per-cluster offset)
+- `schedule`: CronJob schedule in the time zone of kube-controller-manager (default: `""`, every 8 hours at a per-cluster offset)
 - `check.endpoint`: Security check endpoint URL (default: `"https://security-responder.version.rke2.io/v1/check"`)
 - `image.repository`: Container image repository (default: `"rancher/rke2-security-responder"`)
 - `image.tag`: Container image tag (default: `"v0.1.0"`)
