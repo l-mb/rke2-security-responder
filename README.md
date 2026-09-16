@@ -30,7 +30,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Cluster UUID (based on kube-system namespace UID)
   - Node counts, CPU (millicores), and memory (bytes) for control plane and agent nodes
   - CNI plugin in use
-  - Ingress controller in use
+  - Ingress controller in use: the controller that RKE2 bundles, otherwise the controller of the default IngressClass (`other` for an unrecognized controller)
   - Operating system, OS image, kernel version, architecture (from the first node; a consistency flag indicates whether all nodes match)
   - SELinux setting of RKE2 (the `selinux` option: `enabled`, `disabled`, or `mixed` across nodes)
   - GPU node count, vendor, and operator (if present)

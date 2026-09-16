@@ -19,6 +19,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -206,7 +207,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
 
 	logrus.Debug("detecting ingress controller")
-	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
+	ingressController, ingressVersion := detectIngressController(ctx, clientset, kubeSystemDeploy.Items, kubeSystemDS.Items)
 	data.ExtraTagInfo["ingress-controller"] = ingressController
 	data.ExtraTagInfo["ingress-version"] = ingressVersion
 	logrus.WithFields(logrus.Fields{"controller": ingressController, "version": ingressVersion}).Debug("detected ingress")
@@ -572,7 +573,27 @@ func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
 	return "unknown", ""
 }
 
-func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
+// ingressControllers maps IngressClass controller prefixes to reported names.
+var ingressControllers = []struct{ prefix, name string }{
+	{"k8s.io/ingress-nginx", "ingress-nginx"},
+	{"k8s.io/ingress-gce", "gce"},
+	{"traefik.io/", "traefik"},
+	{"nginx.org/", "f5-nginx"},
+	{"haproxy.org/", "haproxy"},
+	{"haproxy-ingress.github.io/", "haproxy-ingress"},
+	{"ingress-controllers.konghq.com/", "kong"},
+	{"projectcontour.io/", "contour"},
+	{"cilium.io/", "cilium"},
+	{"istio.io/", "istio"},
+	{"ingress.k8s.aws/", "aws-alb"},
+	{"azure/application-gateway", "azure-application-gateway"},
+	{"apisix.apache.org/", "apisix"},
+	{"pomerium.io/", "pomerium"},
+}
+
+// detectIngressController reports the RKE2-bundled ingress controller in
+// kube-system, and otherwise the controller of the IngressClasses.
+func detectIngressController(ctx context.Context, clientset kubernetes.Interface, deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
 	for _, deploy := range deployments {
 		name := strings.ToLower(deploy.Name)
 		var ingressName string
@@ -609,7 +630,38 @@ func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv
 		}
 	}
 
-	return "none", "none"
+	return detectIngressClass(ctx, clientset)
+}
+
+// detectIngressClass reports the controller of the default IngressClass, or of
+// the first IngressClass with a known controller. The version is unknown.
+// Unknown controllers report as "other", so that custom names stay private.
+func detectIngressClass(ctx context.Context, clientset kubernetes.Interface) (string, string) {
+	classes, err := clientset.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		logrus.WithError(err).Warn("failed to list IngressClasses")
+		return "unknown", "unknown"
+	}
+	if len(classes.Items) == 0 {
+		return "none", "none"
+	}
+	controller := "other"
+	for i := range classes.Items {
+		name := "other"
+		for _, c := range ingressControllers {
+			if strings.HasPrefix(classes.Items[i].Spec.Controller, c.prefix) {
+				name = c.name
+				break
+			}
+		}
+		if classes.Items[i].Annotations[networkingv1.AnnotationIsDefaultIngressClass] == "true" {
+			return name, "unknown"
+		}
+		if controller == "other" {
+			controller = name
+		}
+	}
+	return controller, "unknown"
 }
 
 func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {

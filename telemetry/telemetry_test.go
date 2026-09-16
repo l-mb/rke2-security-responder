@@ -16,6 +16,8 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,6 +27,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestIsNewerVersion(t *testing.T) {
@@ -444,6 +447,58 @@ func TestCollect_IngressDetection(t *testing.T) {
 	}
 }
 
+func newIngressClass(name, controller string, isDefault bool) *networkingv1.IngressClass {
+	class := &networkingv1.IngressClass{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       networkingv1.IngressClassSpec{Controller: controller},
+	}
+	if isDefault {
+		class.Annotations = map[string]string{networkingv1.AnnotationIsDefaultIngressClass: "true"}
+	}
+	return class
+}
+
+func TestCollect_IngressClass(t *testing.T) {
+	custom := newIngressClass("internal", "example.com/secret-ingress", false)
+	tests := []struct {
+		name            string
+		objs            []runtime.Object
+		listErr         error
+		expectedIngress string
+		expectedVersion string
+	}{
+		{"no ingress class", nil, nil, "none", "none"},
+		{"known controller", []runtime.Object{custom, newIngressClass("haproxy", "haproxy.org/ingress-controller/haproxy", false)}, nil, "haproxy", "unknown"},
+		{"default class wins", []runtime.Object{newIngressClass("kong", "ingress-controllers.konghq.com/kong", false), newIngressClass("nginx", "k8s.io/ingress-nginx", true)}, nil, "ingress-nginx", "unknown"},
+		{"unknown controller skipped", []runtime.Object{custom, newIngressClass("nginx", "k8s.io/ingress-nginx", false)}, nil, "ingress-nginx", "unknown"},
+		{"unknown default class", []runtime.Object{newIngressClass("internal", "example.com/secret-ingress", true), newIngressClass("nginx", "k8s.io/ingress-nginx", false)}, nil, "other", "unknown"},
+		{"unknown controller only", []runtime.Object{custom}, nil, "other", "unknown"},
+		{"bundled controller wins", []runtime.Object{newIngressClass("nginx", "k8s.io/ingress-nginx", true), newDaemonSet("kube-system", "rke2-traefik", "rancher/hardened-traefik:v3.5.0")}, nil, "traefik", "v3.5.0"},
+		{"list error", nil, apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "ingressclasses"}, "", nil), "unknown", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientset := fake.NewClientset(append(tt.objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}})...)
+			if tt.listErr != nil {
+				clientset.PrependReactor("list", "ingressclasses", func(k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, tt.listErr
+				})
+			}
+			data, err := Collect(context.Background(), clientset, nil, "recommended")
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			if data.ExtraTagInfo["ingress-controller"] != tt.expectedIngress {
+				t.Errorf("ingress-controller = %q, want %q", data.ExtraTagInfo["ingress-controller"], tt.expectedIngress)
+			}
+			if data.ExtraTagInfo["ingress-version"] != tt.expectedVersion {
+				t.Errorf("ingress-version = %q, want %q", data.ExtraTagInfo["ingress-version"], tt.expectedVersion)
+			}
+		})
+	}
+}
+
 func TestCollect_GPUDetection(t *testing.T) {
 	clientset := fake.NewClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
@@ -483,6 +538,17 @@ func newDeployment(namespace, name, image string, env ...corev1.EnvVar) *appsv1.
 		Spec: appsv1.DeploymentSpec{
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{Containers: []corev1.Container{{Image: image, Env: env}}},
+			},
+		},
+	}
+}
+
+func newDaemonSet(namespace, name, image string) *appsv1.DaemonSet {
+	return &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: appsv1.DaemonSetSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Image: image}}},
 			},
 		},
 	}
