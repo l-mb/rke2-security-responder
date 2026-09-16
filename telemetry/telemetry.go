@@ -123,8 +123,12 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 			node.Status.NodeInfo.Architecture != arch {
 			nodeInfoConsistent = false
 		}
-		if selinuxInfo == "" {
-			selinuxInfo = getSELinuxStatus(&node)
+		switch s := getSELinuxStatus(&node); {
+		case s == "", s == selinuxInfo:
+		case selinuxInfo == "":
+			selinuxInfo = s
+		default:
+			selinuxInfo = "mixed"
 		}
 		for _, res := range gpuResources {
 			if qty, ok := node.Status.Allocatable[res]; ok {
@@ -311,17 +315,35 @@ func isControlPlaneNode(node *corev1.Node) bool {
 	return hasControlPlaneLabel || hasMasterLabel
 }
 
-// getSELinuxStatus determines SELinux status from node labels.
-// SELinux detection is limited from within containers; this is a best-effort
-// approach. Returns "unknown" if not determinable.
+// getSELinuxStatus reports the RKE2 selinux option of a node, which enables
+// SELinux support in containerd. RKE2 records the node arguments, including
+// config file values, in the node-args annotation, and its RKE2_* environment
+// variables in the node-env annotation. An argument overrides the variable.
+// Windows nodes and nodes without the node-args annotation return "".
 func getSELinuxStatus(node *corev1.Node) string {
-	if selinux, ok := node.Labels["security.alpha.kubernetes.io/selinux"]; ok {
-		if selinux == "enabled" {
-			return "enabled"
-		}
-		return "disabled"
+	var args []string
+	if node.Status.NodeInfo.OperatingSystem == "windows" ||
+		json.Unmarshal([]byte(node.Annotations["rke2.io/node-args"]), &args) != nil {
+		return ""
 	}
-	return "unknown"
+	var env map[string]string
+	_ = json.Unmarshal([]byte(node.Annotations["rke2.io/node-env"]), &env)
+	enabled, _ := strconv.ParseBool(env["RKE2_SELINUX"])
+	for i, arg := range args {
+		if arg != "--selinux" {
+			continue
+		}
+		enabled = true
+		if i+1 < len(args) {
+			if b, err := strconv.ParseBool(args[i+1]); err == nil {
+				enabled = b
+			}
+		}
+	}
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func parseCVEs(raw string) []string {

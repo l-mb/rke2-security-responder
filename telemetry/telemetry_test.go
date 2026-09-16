@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -131,40 +132,100 @@ func TestIsControlPlaneNode(t *testing.T) {
 	}
 }
 
+// newNode returns a Linux node with the given RKE2 node-args annotation.
+// An empty nodeArgs omits the annotation.
+func newNode(name, nodeArgs string) *corev1.Node {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			NodeInfo: corev1.NodeSystemInfo{OperatingSystem: "linux", OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
+		},
+	}
+	if nodeArgs != "" {
+		node.Annotations = map[string]string{"rke2.io/node-args": nodeArgs}
+	}
+	return node
+}
+
 func TestGetSELinuxStatus(t *testing.T) {
 	tests := []struct {
 		name     string
-		labels   map[string]string
+		nodeArgs string
 		expected string
 	}{
-		{
-			name:     "enabled",
-			labels:   map[string]string{"security.alpha.kubernetes.io/selinux": "enabled"},
-			expected: "enabled",
-		},
-		{
-			name:     "disabled",
-			labels:   map[string]string{"security.alpha.kubernetes.io/selinux": "disabled"},
-			expected: "disabled",
-		},
-		{
-			name:     "other value",
-			labels:   map[string]string{"security.alpha.kubernetes.io/selinux": "permissive"},
-			expected: "disabled",
-		},
-		{
-			name:     "no label",
-			labels:   map[string]string{},
-			expected: "unknown",
-		},
+		{"config file true", `["server","--selinux","true","--cni","canal"]`, "enabled"},
+		{"config file false", `["agent","--selinux","false"]`, "disabled"},
+		{"command line flag", `["server","--selinux","--write-kubeconfig-mode","0644"]`, "enabled"},
+		{"command line flag last", `["agent","--selinux"]`, "enabled"},
+		{"last value wins", `["server","--selinux","true","--selinux","false"]`, "disabled"},
+		{"option absent", `["server","--cni","cilium"]`, "disabled"},
+		{"no annotation", "", ""},
+		{"malformed annotation", `server --selinux`, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Labels: tt.labels}}
-			result := getSELinuxStatus(node)
-			if result != tt.expected {
-				t.Errorf("getSELinuxStatus() = %q, want %q", result, tt.expected)
+			if got := getSELinuxStatus(newNode("node-1", tt.nodeArgs)); got != tt.expected {
+				t.Errorf("getSELinuxStatus() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+
+	envTests := []struct {
+		name     string
+		nodeArgs string
+		nodeEnv  string
+		expected string
+	}{
+		{"environment variable", `["server"]`, `{"RKE2_SELINUX":"true"}`, "enabled"},
+		{"argument overrides environment variable", `["server","--selinux","false"]`, `{"RKE2_SELINUX":"true"}`, "disabled"},
+		{"other environment variables", `["server"]`, `{"RKE2_TOKEN":"********"}`, "disabled"},
+	}
+	for _, tt := range envTests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := newNode("node-1", tt.nodeArgs)
+			node.Annotations["rke2.io/node-env"] = tt.nodeEnv
+			if got := getSELinuxStatus(node); got != tt.expected {
+				t.Errorf("getSELinuxStatus() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+
+	t.Run("windows", func(t *testing.T) {
+		node := newNode("node-1", `["agent"]`)
+		node.Status.NodeInfo.OperatingSystem = "windows"
+		if got := getSELinuxStatus(node); got != "" {
+			t.Errorf("getSELinuxStatus() = %q, want empty", got)
+		}
+	})
+}
+
+func TestCollect_SELinux(t *testing.T) {
+	const enabled, disabled = `["server","--selinux","true"]`, `["agent"]`
+	tests := []struct {
+		name     string
+		nodeArgs []string
+		expected string
+	}{
+		{"all enabled", []string{enabled, enabled}, "enabled"},
+		{"all disabled", []string{disabled, disabled}, "disabled"},
+		{"mixed", []string{enabled, disabled, enabled}, "mixed"},
+		{"nodes without annotation ignored", []string{"", enabled}, "enabled"},
+		{"no annotation", []string{"", ""}, "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objs := []runtime.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}}}
+			for i, args := range tt.nodeArgs {
+				objs = append(objs, newNode(fmt.Sprintf("node-%d", i), args))
+			}
+			data, err := Collect(context.Background(), fake.NewClientset(objs...), nil, "recommended")
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			if data.ExtraTagInfo["selinux"] != tt.expected {
+				t.Errorf("selinux = %q, want %q", data.ExtraTagInfo["selinux"], tt.expected)
 			}
 		})
 	}

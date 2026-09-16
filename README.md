@@ -32,7 +32,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - CNI plugin in use
   - Ingress controller in use
   - Operating system, OS image, kernel version, architecture (from the first node; a consistency flag indicates whether all nodes match)
-  - SELinux status
+  - SELinux setting of RKE2 (the `selinux` option: `enabled`, `disabled`, or `mixed` across nodes)
   - GPU node count, vendor, and operator (if present)
   - Rancher Manager status, version, and install UUID (if managed)
   - Rancher Prime distribution flag and observed `system-default-registry` (read from HelmChart `spec.set`)
