@@ -34,7 +34,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Operating system, OS image, kernel version, architecture (from the first node; a consistency flag indicates whether all nodes match)
   - SELinux setting of RKE2 (the `selinux` option: `enabled`, `disabled`, or `mixed` across nodes)
   - GPU node count, vendor, and operator (if present)
-  - Rancher Manager status, version, and install UUID (if managed)
+  - Rancher Manager role (`downstream` when Rancher manages the cluster, `server` when the cluster runs Rancher), version, and install UUID
   - Rancher Prime distribution flag and observed `system-default-registry` (read from HelmChart `spec.set`)
   - IP stack configuration (IPv4-only, IPv6-only, or dual-stack)
 - Sends data to a configurable endpoint
@@ -61,7 +61,7 @@ the `minimal` setting instead.
 - OS, kernel, architecture, SELinux status, node info consistency
 - CNI plugin, ingress controller, IP stack configuration
 - GPU presence and vendor
-- Whether Rancher manages the cluster (boolean only)
+- Whether Rancher manages the cluster, and the Rancher role
 - Rancher Prime distribution flag (tri-state) and observed `system-default-registry`
 
 **Minimal mode** redacts:
@@ -94,6 +94,7 @@ Example recommended payload structure:
     "gpu-operator": "nvidia-gpu-operator",
     "gpu-operator-version": "v25.10.1",
     "rancher-managed": "true",
+    "rancher-role": "downstream",
     "rancher-version": "v2.9.3",
     "rancher-prime": "true",
     "system-default-registry": "registry.rancher.com",

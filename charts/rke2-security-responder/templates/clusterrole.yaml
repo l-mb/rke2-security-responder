@@ -25,3 +25,8 @@ rules:
   - apiGroups: ["helm.cattle.io"]
     resources: ["helmcharts"]
     verbs: ["get", "list"]
+  # Need to read the Rancher install UUID on a cluster that runs Rancher Manager
+  - apiGroups: ["management.cattle.io"]
+    resources: ["settings"]
+    resourceNames: ["install-uuid"]
+    verbs: ["get"]

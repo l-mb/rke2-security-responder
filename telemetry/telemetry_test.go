@@ -477,66 +477,89 @@ func TestCollect_GPUDetection(t *testing.T) {
 	}
 }
 
-func TestCollect_RancherManaged(t *testing.T) {
-	clientset := fake.NewClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
-			Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"}},
-		},
-		&appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "cattle-cluster-agent", Namespace: "cattle-system"},
-			Spec: appsv1.DeploymentSpec{
-				Template: corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{{
-							Image: "rancher/rancher-agent:v2.8.0",
-							Env: []corev1.EnvVar{
-								{Name: "CATTLE_INSTALL_UUID", Value: "rancher-install-uuid-123"},
-							},
-						}},
-					},
-				},
+func newDeployment(namespace, name, image string, env ...corev1.EnvVar) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Image: image, Env: env}}},
 			},
 		},
-	)
-
-	data, err := Collect(context.Background(), clientset, nil, "recommended")
-	if err != nil {
-		t.Fatalf("Collect() error = %v", err)
-	}
-
-	if data.ExtraTagInfo["rancher-managed"] != "true" {
-		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
-	}
-	if data.ExtraTagInfo["rancher-version"] != "v2.8.0" {
-		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraTagInfo["rancher-version"])
-	}
-	if data.ExtraFieldInfo["rancher-install-uuid"] != "rancher-install-uuid-123" {
-		t.Errorf("rancher-install-uuid = %v, want rancher-install-uuid-123", data.ExtraFieldInfo["rancher-install-uuid"])
 	}
 }
 
-func TestCollect_RancherManagedWithoutAgent(t *testing.T) {
-	clientset := fake.NewClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
-	)
+func newRancherSetting(name, value string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "management.cattle.io/v3",
+		"kind":       "Setting",
+		"metadata":   map[string]interface{}{"name": name},
+		"value":      value,
+	}}
+}
 
-	data, err := Collect(context.Background(), clientset, nil, "recommended")
-	if err != nil {
-		t.Fatalf("Collect() error = %v", err)
+func TestCollect_RancherRole(t *testing.T) {
+	uuidEnv := corev1.EnvVar{Name: "CATTLE_INSTALL_UUID", Value: "install-uuid"}
+	cattleSystem := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}}
+	webhook := newDeployment("cattle-system", "rancher-webhook", "rancher/rancher-webhook:v0.8.1")
+	tests := []struct {
+		name        string
+		objs        []runtime.Object
+		dynObjs     []runtime.Object
+		wantManaged string
+		wantRole    string
+		wantVersion string
+		wantUUID    any
+	}{
+		{
+			name:        "no cattle-system",
+			wantManaged: "false", wantRole: "none", wantVersion: "none", wantUUID: nil,
+		},
+		{
+			name: "downstream",
+			objs: []runtime.Object{cattleSystem, webhook,
+				newDeployment("cattle-system", "cattle-cluster-agent", "rancher/rancher-agent:v2.12.1", uuidEnv)},
+			wantManaged: "true", wantRole: "downstream", wantVersion: "v2.12.1", wantUUID: "install-uuid",
+		},
+		{
+			name: "downstream prefers the server version variable",
+			objs: []runtime.Object{cattleSystem, newDeployment("cattle-system", "cattle-cluster-agent", "registry.example.com/rancher/rancher-agent:v2.12.1@sha256:abc123",
+				corev1.EnvVar{Name: "CATTLE_SERVER_VERSION", Value: "v2.12.2"}, uuidEnv)},
+			wantManaged: "true", wantRole: "downstream", wantVersion: "v2.12.2", wantUUID: "install-uuid",
+		},
+		{
+			name:        "server",
+			objs:        []runtime.Object{cattleSystem, webhook, newDeployment("cattle-system", "rancher", "registry.rancher.com/rancher/rancher:v2.12.1")},
+			dynObjs:     []runtime.Object{newRancherSetting("install-uuid", "install-uuid")},
+			wantManaged: "true", wantRole: "server", wantVersion: "v2.12.1", wantUUID: "install-uuid",
+		},
+		{
+			name:        "server without install-uuid setting",
+			objs:        []runtime.Object{cattleSystem, newDeployment("cattle-system", "rancher", "rancher/rancher:v2.12.1")},
+			wantManaged: "true", wantRole: "server", wantVersion: "v2.12.1", wantUUID: nil,
+		},
+		{
+			name:        "no Rancher workload",
+			objs:        []runtime.Object{cattleSystem, webhook},
+			wantManaged: "true", wantRole: "unknown", wantVersion: "unknown", wantUUID: nil,
+		},
 	}
 
-	if data.ExtraTagInfo["rancher-managed"] != "true" {
-		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
-	}
-	if data.ExtraTagInfo["rancher-version"] != "unknown" {
-		t.Errorf("rancher-version = %v, want unknown", data.ExtraTagInfo["rancher-version"])
-	}
-	if _, ok := data.ExtraFieldInfo["rancher-install-uuid"]; ok {
-		t.Errorf("rancher-install-uuid should be omitted when empty, got %v", data.ExtraFieldInfo["rancher-install-uuid"])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objs := append(tt.objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}})
+			data, err := Collect(context.Background(), fake.NewClientset(objs...), newDynClient(tt.dynObjs...), "recommended")
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			for key, want := range map[string]string{"rancher-managed": tt.wantManaged, "rancher-role": tt.wantRole, "rancher-version": tt.wantVersion} {
+				if got := data.ExtraTagInfo[key]; got != want {
+					t.Errorf("%s = %q, want %q", key, got, want)
+				}
+			}
+			if got := data.ExtraFieldInfo["rancher-install-uuid"]; got != tt.wantUUID {
+				t.Errorf("rancher-install-uuid = %v, want %v", got, tt.wantUUID)
+			}
+		})
 	}
 }
 
@@ -883,9 +906,12 @@ func TestCollect_MinimalMode(t *testing.T) {
 		t.Errorf("agentMemory = %v, want -1", data.ExtraFieldInfo["agentMemory"])
 	}
 
-	// Rancher-managed should still be present
+	// Rancher-managed and the role should still be present
 	if data.ExtraTagInfo["rancher-managed"] != "true" {
 		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
+	}
+	if data.ExtraTagInfo["rancher-role"] != "downstream" {
+		t.Errorf("rancher-role = %v, want downstream", data.ExtraTagInfo["rancher-role"])
 	}
 
 	// Rancher version is redacted and UUID empty in minimal mode
@@ -923,6 +949,7 @@ func TestCollect_TagsAndFields(t *testing.T) {
 			"gpu-operator":            "none",
 			"gpu-operator-version":    "none",
 			"rancher-managed":         "false",
+			"rancher-role":            "none",
 			"rancher-version":         rancherVersion,
 			"rancher-prime":           "unknown",
 			"system-default-registry": "unknown",

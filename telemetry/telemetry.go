@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,11 +35,18 @@ const (
 	retryDelay      = 2 * time.Second
 )
 
-var helmChartGVR = schema.GroupVersionResource{
-	Group:    "helm.cattle.io",
-	Version:  "v1",
-	Resource: "helmcharts",
-}
+var (
+	helmChartGVR = schema.GroupVersionResource{
+		Group:    "helm.cattle.io",
+		Version:  "v1",
+		Resource: "helmcharts",
+	}
+	rancherSettingGVR = schema.GroupVersionResource{
+		Group:    "management.cattle.io",
+		Version:  "v3",
+		Resource: "settings",
+	}
+)
 
 type Data struct {
 	AppVersion     string                 `json:"appVersion"`
@@ -210,8 +218,9 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 	logrus.WithFields(logrus.Fields{"operator": gpuOperator, "version": gpuOperatorVersion}).Debug("detected GPU operator")
 
 	logrus.Debug("detecting Rancher Manager")
-	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
-	data.ExtraTagInfo["rancher-managed"] = strconv.FormatBool(rancherManaged)
+	rancherRole, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset, dynClient)
+	data.ExtraTagInfo["rancher-managed"] = strconv.FormatBool(rancherRole != "none")
+	data.ExtraTagInfo["rancher-role"] = rancherRole
 	if isMinimal {
 		data.ExtraTagInfo["rancher-version"] = "redacted"
 		data.ExtraFieldInfo["rancher-install-uuid"] = ""
@@ -221,7 +230,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 			data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
 		}
 	}
-	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
+	logrus.WithFields(logrus.Fields{"role": rancherRole, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
 
 	logrus.Debug("detecting Prime distribution flag")
 	prime, sysDefaultRegistry := detectPrime(ctx, dynClient)
@@ -527,12 +536,18 @@ func logRecommendations(newer []Version, current *Version) {
 	}
 }
 
-func extractImageVersion(image string) string {
+// splitImage splits an image reference into repository and tag, and drops a digest.
+func splitImage(image string) (repository, tag string) {
 	image, _, _ = strings.Cut(image, "@")
 	if idx := strings.LastIndex(image, ":"); idx > strings.LastIndex(image, "/") {
-		return image[idx+1:]
+		return image[:idx], image[idx+1:]
 	}
-	return ""
+	return image, ""
+}
+
+func extractImageVersion(image string) string {
+	_, tag := splitImage(image)
+	return tag
 }
 
 // detectCNIPlugin matches DaemonSet names in all namespaces, because some CNIs
@@ -624,28 +639,54 @@ func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (str
 	return "none", "none"
 }
 
-func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (managed bool, version, installUUID string) {
-	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
+// detectRancherManager classifies the cluster by the Rancher images in
+// cattle-system. The role is "downstream" when cattle-cluster-agent connects
+// the cluster to a Rancher Manager, and "server" when the cluster runs Rancher
+// Manager itself. Rancher does not deploy its agent on its own cluster.
+func detectRancherManager(ctx context.Context, clientset kubernetes.Interface, dynClient dynamic.Interface) (role, version, installUUID string) {
+	if _, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{}); err != nil {
+		return "none", "none", ""
+	}
+	deployments, err := clientset.AppsV1().Deployments("cattle-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return false, "none", ""
+		logrus.WithError(err).Warn("failed to list cattle-system deployments")
+		return "unknown", "", ""
 	}
 
-	deploy, err := clientset.AppsV1().Deployments("cattle-system").Get(ctx, "cattle-cluster-agent", metav1.GetOptions{})
-	if err != nil {
-		return true, "", ""
-	}
-
-	if len(deploy.Spec.Template.Spec.Containers) > 0 {
-		container := deploy.Spec.Template.Spec.Containers[0]
-		version = extractImageVersion(container.Image)
-		for _, env := range container.Env {
-			if env.Name == "CATTLE_INSTALL_UUID" && env.Value != "" {
-				installUUID = env.Value
-				break
+	role = "unknown"
+	for _, deploy := range deployments.Items {
+		for _, container := range deploy.Spec.Template.Spec.Containers {
+			repository, tag := splitImage(container.Image)
+			switch path.Base(repository) {
+			case "rancher-agent":
+				env := map[string]string{}
+				for _, e := range container.Env {
+					env[e.Name] = e.Value
+				}
+				return "downstream", cmp.Or(env["CATTLE_SERVER_VERSION"], tag), env["CATTLE_INSTALL_UUID"]
+			case "rancher":
+				role, version = "server", tag
 			}
 		}
 	}
-	return true, version, installUUID
+	if role == "server" {
+		installUUID = getRancherInstallUUID(ctx, dynClient)
+	}
+	return role, version, installUUID
+}
+
+// getRancherInstallUUID reads the install-uuid setting of the local Rancher Manager.
+func getRancherInstallUUID(ctx context.Context, dynClient dynamic.Interface) string {
+	if dynClient == nil {
+		return ""
+	}
+	setting, err := dynClient.Resource(rancherSettingGVR).Get(ctx, "install-uuid", metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Debug("failed to read the Rancher install-uuid setting")
+		return ""
+	}
+	uuid, _, _ := unstructured.NestedString(setting.Object, "value")
+	return uuid
 }
 
 // detectIPStack determines the cluster's IP stack configuration from the kubernetes service.
