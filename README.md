@@ -24,7 +24,7 @@ Thank you!
 Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/master/docs/adrs/010-security-responder.md), this component:
 
 - Runs as a CronJob in the `kube-system` namespace
-- Executes thrice daily (every 8 hours: `0 */8 * * *`)
+- Executes thrice daily, every 8 hours in UTC. The minute and the hour offset derive from the cluster UUID, so clusters do not all report at the same time.
 - Collects cluster metadata including (depending on settings):
   - Kubernetes version
   - Cluster UUID (based on kube-system namespace UID)
@@ -142,7 +142,7 @@ disable:
 The component is packaged as a Helm chart with the following configurable values:
 
 - `mode`: Collection mode - `"recommended"` (default) or `"minimal"`
-- `schedule`: CronJob schedule (default: `"0 */8 * * *"`)
+- `schedule`: CronJob schedule in UTC (default: `""`, every 8 hours at a per-cluster offset)
 - `check.endpoint`: Security check endpoint URL (default: `"https://security-responder.version.rke2.io/v1/check"`)
 - `image.repository`: Container image repository (default: `"rancher/rke2-security-responder"`)
 - `image.tag`: Container image tag (default: `"v0.1.0"`)
