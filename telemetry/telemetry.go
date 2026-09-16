@@ -502,12 +502,9 @@ func logRecommendations(newer []Version, current *Version) {
 }
 
 func extractImageVersion(image string) string {
-	if idx := strings.LastIndex(image, ":"); idx != -1 {
-		tag := image[idx+1:]
-		if atIdx := strings.Index(tag, "@"); atIdx != -1 {
-			tag = tag[:atIdx]
-		}
-		return tag
+	image, _, _ = strings.Cut(image, "@")
+	if idx := strings.LastIndex(image, ":"); idx > strings.LastIndex(image, "/") {
+		return image[idx+1:]
 	}
 	return ""
 }

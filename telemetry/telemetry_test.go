@@ -69,8 +69,10 @@ func TestExtractImageVersion(t *testing.T) {
 		{"nginx:latest", "latest"},
 		{"registry.example.com/nginx:v1.0.0", "v1.0.0"},
 		{"nginx", ""},
-		{"nginx@sha256:abc123", "abc123"},        // digest-only: LastIndex finds sha256's colon
-		{"nginx:v1.0.0@sha256:abc123", "abc123"}, // tag+digest: LastIndex finds sha256's colon (edge case)
+		{"nginx@sha256:abc123", ""},
+		{"nginx:v1.0.0@sha256:abc123", "v1.0.0"},
+		{"registry.example.com:5000/nginx", ""},
+		{"registry.example.com:5000/nginx:v1.0.0", "v1.0.0"},
 		{"gcr.io/project/image:tag", "tag"},
 		{"", ""},
 	}
