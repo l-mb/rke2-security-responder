@@ -188,7 +188,11 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 	}
 
 	logrus.Debug("detecting CNI plugin")
-	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
+	allDS, err := clientset.AppsV1().DaemonSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list daemonsets: %w", err)
+	}
+	cniPlugin, cniVersion := detectCNIPlugin(allDS.Items)
 	data.ExtraTagInfo["cni-plugin"] = cniPlugin
 	data.ExtraTagInfo["cni-version"] = cniVersion
 	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
@@ -531,19 +535,16 @@ func extractImageVersion(image string) string {
 	return ""
 }
 
+// detectCNIPlugin matches DaemonSet names in all namespaces, because some CNIs
+// do not run in kube-system. For example, the Tigera operator of rke2-calico
+// runs calico-node in calico-system.
 func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
-	cniPatterns := map[string]string{
-		"canal":   "canal",
-		"flannel": "flannel",
-		"calico":  "calico",
-		"cilium":  "cilium",
-		"weave":   "weave",
-	}
+	cniNames := []string{"canal", "flannel", "calico", "cilium", "antrea", "kube-ovn", "kube-router", "weave"}
 
 	for _, ds := range daemonSets {
 		name := strings.ToLower(ds.Name)
-		for pattern, cniName := range cniPatterns {
-			if strings.Contains(name, pattern) {
+		for _, cniName := range cniNames {
+			if strings.Contains(name, cniName) {
 				version := ""
 				if len(ds.Spec.Template.Spec.Containers) > 0 {
 					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)

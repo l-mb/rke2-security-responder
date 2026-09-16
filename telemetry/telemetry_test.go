@@ -345,17 +345,20 @@ func TestCollect_NodeInfoInconsistent(t *testing.T) {
 func TestCollect_CNIDetection(t *testing.T) {
 	tests := []struct {
 		name            string
+		namespace       string
 		daemonSet       string
 		image           string
 		expectedCNI     string
 		expectedVersion string
 	}{
-		{"canal", "rke2-canal", "rancher/hardened-calico:v3.26.0", "canal", "v3.26.0"},
-		{"flannel", "kube-flannel-ds", "flannel/flannel:v0.22.0", "flannel", "v0.22.0"},
-		{"calico", "calico-node", "calico/node:v3.26.0", "calico", "v3.26.0"},
-		{"cilium", "cilium", "cilium/cilium:v1.14.0", "cilium", "v1.14.0"},
-		{"weave", "weave-net", "weaveworks/weave-kube:2.8.1", "weave", "2.8.1"},
-		{"untagged", "cilium", "cilium/cilium", "cilium", "unknown"},
+		{"canal", "kube-system", "rke2-canal", "rancher/hardened-calico:v3.26.0", "canal", "v3.26.0"},
+		{"flannel", "kube-flannel", "kube-flannel-ds", "flannel/flannel:v0.22.0", "flannel", "v0.22.0"},
+		{"calico operator", "calico-system", "calico-node", "rancher/hardened-calico:v3.30.2-build20260801@sha256:abc123", "calico", "v3.30.2-build20260801"},
+		{"cilium", "kube-system", "cilium", "cilium/cilium:v1.14.0", "cilium", "v1.14.0"},
+		{"antrea", "kube-system", "antrea-agent", "antrea/antrea-agent-ubuntu:v2.4.0", "antrea", "v2.4.0"},
+		{"weave", "kube-system", "weave-net", "weaveworks/weave-kube:2.8.1", "weave", "2.8.1"},
+		{"untagged", "kube-system", "cilium", "cilium/cilium", "cilium", "unknown"},
+		{"unrecognized", "kube-system", "my-cni", "example/cni:v1.0.0", "unknown", "unknown"},
 	}
 
 	for _, tt := range tests {
@@ -367,7 +370,7 @@ func TestCollect_CNIDetection(t *testing.T) {
 					Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"}},
 				},
 				&appsv1.DaemonSet{
-					ObjectMeta: metav1.ObjectMeta{Name: tt.daemonSet, Namespace: "kube-system"},
+					ObjectMeta: metav1.ObjectMeta{Name: tt.daemonSet, Namespace: tt.namespace},
 					Spec: appsv1.DaemonSetSpec{
 						Template: corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
