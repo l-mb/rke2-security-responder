@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/rancher/rke2-security-responder/telemetry"
@@ -65,12 +66,7 @@ func run() error {
 		return fmt.Errorf("collect data: %w", err)
 	}
 
-	// Mark non-release builds for server-side filtering
-	// Clean tags: v1.2.3, v1.2.3-rc1, v1.2.3+rke2r1
-	// Non-clean: v1.2.3-5-gabcdef (commits after tag), v1.2.3-dirty, abcdef (no tag), dev
-	if !isReleaseVersion(Version) || os.Getenv("SECURITY_RESPONDER_DEV") == "true" {
-		data.ExtraFieldInfo["dev"] = true
-	}
+	data.ExtraTagInfo["dev"] = strconv.FormatBool(isDevBuild(Version))
 
 	if *debug {
 		jsonData, _ := json.MarshalIndent(data, "", "  ")
@@ -88,6 +84,13 @@ func run() error {
 	}
 
 	return nil
+}
+
+// isDevBuild marks non-release builds for server-side filtering.
+// Clean tags: v1.2.3, v1.2.3-rc1, v1.2.3+rke2r1
+// Non-clean: v1.2.3-5-gabcdef (commits after tag), v1.2.3-dirty, abcdef (no tag), dev
+func isDevBuild(version string) bool {
+	return !isReleaseVersion(version) || os.Getenv("SECURITY_RESPONDER_DEV") == "true"
 }
 
 // releaseVersionRe matches clean release tags: v1.2.3, v1.2.3-rc1, v1.2.3+rke2r1

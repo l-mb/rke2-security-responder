@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -60,10 +61,9 @@ type Version struct {
 
 func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dynamic.Interface, mode string) (*Data, error) {
 	data := &Data{
-		ExtraTagInfo:   make(map[string]string),
+		ExtraTagInfo:   map[string]string{"mode": mode},
 		ExtraFieldInfo: make(map[string]interface{}),
 	}
-	data.ExtraFieldInfo["mode"] = mode
 	isMinimal := mode == "minimal"
 
 	logrus.Debug("collecting server version")
@@ -72,7 +72,6 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 		return nil, fmt.Errorf("failed to get server version: %w", err)
 	}
 	data.AppVersion = versionInfo.GitVersion
-	data.ExtraTagInfo["kubernetesVersion"] = versionInfo.GitVersion
 	logrus.WithField("version", versionInfo.GitVersion).Debug("collected version")
 
 	logrus.Debug("collecting cluster UUID from kube-system namespace")
@@ -157,15 +156,13 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 		data.ExtraFieldInfo["agentMemory"] = agentMemory
 		data.ExtraFieldInfo["gpuNodeCount"] = gpuNodeCount
 	}
-	data.ExtraFieldInfo["operating-system"] = operatingSystem
-	data.ExtraFieldInfo["os"] = osImage
+	data.ExtraTagInfo["operating-system"] = operatingSystem
+	data.ExtraTagInfo["os"] = osImage
 	data.ExtraFieldInfo["kernel"] = kernelVersion
-	data.ExtraFieldInfo["arch"] = arch
-	data.ExtraFieldInfo["selinux"] = selinuxInfo
-	data.ExtraFieldInfo["node-info-consistent"] = nodeInfoConsistent
-	if gpuVendor != "" {
-		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
-	}
+	data.ExtraTagInfo["arch"] = arch
+	data.ExtraTagInfo["selinux"] = selinuxInfo
+	data.ExtraTagInfo["node-info-consistent"] = strconv.FormatBool(nodeInfoConsistent)
+	data.ExtraTagInfo["gpu-vendor"] = cmp.Or(gpuVendor, "none")
 	logrus.WithFields(logrus.Fields{
 		"server":       serverNodeCount,
 		"agent":        agentNodeCount,
@@ -188,40 +185,30 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 
 	logrus.Debug("detecting CNI plugin")
 	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
-	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
-	if cniVersion != "" {
-		data.ExtraFieldInfo["cni-version"] = cniVersion
-	}
+	data.ExtraTagInfo["cni-plugin"] = cniPlugin
+	data.ExtraTagInfo["cni-version"] = cniVersion
 	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
 
 	logrus.Debug("detecting ingress controller")
 	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
-	data.ExtraFieldInfo["ingress-controller"] = ingressController
-	if ingressVersion != "" {
-		data.ExtraFieldInfo["ingress-version"] = ingressVersion
-	}
+	data.ExtraTagInfo["ingress-controller"] = ingressController
+	data.ExtraTagInfo["ingress-version"] = ingressVersion
 	logrus.WithFields(logrus.Fields{"controller": ingressController, "version": ingressVersion}).Debug("detected ingress")
 
 	logrus.Debug("detecting GPU operator")
 	gpuOperator, gpuOperatorVersion := detectGPUOperator(ctx, clientset)
-	if gpuOperator != "none" {
-		data.ExtraFieldInfo["gpu-operator"] = gpuOperator
-		if gpuOperatorVersion != "" {
-			data.ExtraFieldInfo["gpu-operator-version"] = gpuOperatorVersion
-		}
-	}
+	data.ExtraTagInfo["gpu-operator"] = gpuOperator
+	data.ExtraTagInfo["gpu-operator-version"] = gpuOperatorVersion
 	logrus.WithFields(logrus.Fields{"operator": gpuOperator, "version": gpuOperatorVersion}).Debug("detected GPU operator")
 
 	logrus.Debug("detecting Rancher Manager")
 	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
-	data.ExtraFieldInfo["rancher-managed"] = rancherManaged
+	data.ExtraTagInfo["rancher-managed"] = strconv.FormatBool(rancherManaged)
 	if isMinimal {
-		data.ExtraFieldInfo["rancher-version"] = ""
+		data.ExtraTagInfo["rancher-version"] = "redacted"
 		data.ExtraFieldInfo["rancher-install-uuid"] = ""
 	} else {
-		if rancherVersion != "" {
-			data.ExtraFieldInfo["rancher-version"] = rancherVersion
-		}
+		data.ExtraTagInfo["rancher-version"] = rancherVersion
 		if rancherInstallUUID != "" {
 			data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
 		}
@@ -230,16 +217,21 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 
 	logrus.Debug("detecting Prime distribution flag")
 	prime, sysDefaultRegistry := detectPrime(ctx, dynClient)
-	data.ExtraFieldInfo["rancher-prime"] = prime
-	if sysDefaultRegistry != "" {
-		data.ExtraFieldInfo["system-default-registry"] = sysDefaultRegistry
-	}
+	data.ExtraTagInfo["rancher-prime"] = prime
+	data.ExtraTagInfo["system-default-registry"] = sysDefaultRegistry
 	logrus.WithFields(logrus.Fields{"prime": prime, "systemDefaultRegistry": sysDefaultRegistry}).Debug("detected Prime")
 
 	logrus.Debug("detecting IP stack configuration")
 	ipStack := detectIPStack(ctx, clientset)
-	data.ExtraFieldInfo["ip-stack"] = ipStack
+	data.ExtraTagInfo["ip-stack"] = ipStack
 	logrus.WithField("ip-stack", ipStack).Debug("detected IP stack")
+
+	// InfluxDB drops empty tag values, so report undetected values as unknown.
+	for k, v := range data.ExtraTagInfo {
+		if v == "" {
+			data.ExtraTagInfo[k] = "unknown"
+		}
+	}
 
 	return data, nil
 }
@@ -582,7 +574,7 @@ func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv
 		}
 	}
 
-	return "none", ""
+	return "none", "none"
 }
 
 func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {
@@ -609,13 +601,13 @@ func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (str
 		}
 	}
 
-	return "none", ""
+	return "none", "none"
 }
 
 func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (managed bool, version, installUUID string) {
 	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
 	if err != nil {
-		return false, "", ""
+		return false, "none", ""
 	}
 
 	deploy, err := clientset.AppsV1().Deployments("cattle-system").Get(ctx, "cattle-cluster-agent", metav1.GetOptions{})
@@ -670,7 +662,8 @@ func detectIPStack(ctx context.Context, clientset kubernetes.Interface) string {
 // detectPrime reads global.prime.enabled and global.systemDefaultRegistry from
 // HelmChart spec.set, which RKE2 injects at bootstrap (rancher/rke2#9859).
 // Returns "unknown" when the CRD/RBAC/charts are absent or no chart carries the
-// key (pre-PR-9859 cluster). Positive wins on HA mismatch.
+// key (pre-PR-9859 cluster). Positive wins on HA mismatch. The registry is "none"
+// when RKE2 injects it empty, and "" when no chart carries it.
 func detectPrime(ctx context.Context, dynClient dynamic.Interface) (string, string) {
 	if dynClient == nil {
 		return "unknown", ""
@@ -686,6 +679,7 @@ func detectPrime(ctx context.Context, dynClient dynamic.Interface) (string, stri
 	}
 	state := "unknown"
 	var registry string
+	registryInjected := false
 	for i := range list.Items {
 		set, _, _ := unstructured.NestedMap(list.Items[i].Object, "spec", "set")
 		if state != "true" {
@@ -700,14 +694,16 @@ func detectPrime(ctx context.Context, dynClient dynamic.Interface) (string, stri
 				}
 			}
 		}
-		if registry == "" {
-			if r, ok := set["global.systemDefaultRegistry"].(string); ok {
-				registry = r
-			}
+		if r, ok := set["global.systemDefaultRegistry"].(string); ok {
+			registryInjected = true
+			registry = cmp.Or(registry, r)
 		}
 		if state == "true" && registry != "" {
 			break
 		}
+	}
+	if registryInjected {
+		registry = cmp.Or(registry, "none")
 	}
 	return state, registry
 }

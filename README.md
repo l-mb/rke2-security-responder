@@ -67,7 +67,8 @@ the `minimal` setting instead.
 **Minimal mode** redacts:
 - `serverNodeCount`, `agentNodeCount`, `gpuNodeCount` → `-1`
 - `serverCPU`, `agentCPU`, `serverMemory`, `agentMemory` → `-1`
-- `rancher-version`, `rancher-install-uuid` → `""`
+- `rancher-version` → `"redacted"`
+- `rancher-install-uuid` → `""`
 
 ## Data Shared
 
@@ -77,40 +78,49 @@ Example recommended payload structure:
 {
   "appVersion": "v1.32.2+rke2r1",
   "extraTagInfo": {
-    "kubernetesVersion": "v1.32.2",
-    "clusteruuid": "53741f60-f208-48fc-ae81-8a969510a598"
-  },
-  "extraFieldInfo": {
+    "clusteruuid": "53741f60-f208-48fc-ae81-8a969510a598",
     "mode": "recommended",
-    "serverNodeCount": 3,
-    "agentNodeCount": 2,
-    "serverCPU": 12000,
-    "agentCPU": 8000,
-    "serverMemory": 25769803776,
-    "agentMemory": 17179869184,
+    "dev": "false",
     "operating-system": "linux",
     "os": "SLE Micro 6.1",
-    "kernel": "6.4.0-150600.23.47-default",
     "arch": "amd64",
-    "node-info-consistent": true,
+    "node-info-consistent": "true",
     "selinux": "enabled",
     "cni-plugin": "cilium",
     "cni-version": "v1.16.5",
     "ingress-controller": "rke2-ingress-nginx",
     "ingress-version": "v1.12.1",
-    "gpuNodeCount": 2,
     "gpu-vendor": "nvidia",
     "gpu-operator": "nvidia-gpu-operator",
     "gpu-operator-version": "v25.10.1",
-    "rancher-managed": true,
+    "rancher-managed": "true",
     "rancher-version": "v2.9.3",
-    "rancher-install-uuid": "53741f60-f208-48fc-ae81-8a969510a598",
     "rancher-prime": "true",
     "system-default-registry": "registry.rancher.com",
     "ip-stack": "dual-stack"
+  },
+  "extraFieldInfo": {
+    "serverNodeCount": 3,
+    "agentNodeCount": 2,
+    "gpuNodeCount": 2,
+    "serverCPU": 12000,
+    "agentCPU": 8000,
+    "serverMemory": 25769803776,
+    "agentMemory": 17179869184,
+    "kernel": "6.4.0-150600.23.47-default",
+    "rancher-install-uuid": "0c0a3a4e-6c7e-4f3b-9d0e-2b8f1d6a7c55"
   }
 }
 ```
+
+All values in `extraTagInfo` are strings. The server stores them as InfluxDB tags, so dashboards can group clusters by them.
+The counts, `kernel` and `rancher-install-uuid` stay in `extraFieldInfo`, because they are numbers or have too many distinct values.
+
+A tag value is never empty. These placeholder values have a fixed meaning:
+
+- `none`: the component is not present or not configured, for example no GPU operator or no system default registry.
+- `unknown`: the responder could not detect the value, for example an image without a version tag.
+- `redacted`: minimal mode withholds the value.
 
 The `clusteruuid` is completely random (the UUID of the `kube-system` namespace) and does not
 expose any privacy concerns. The only purpose is de-duplication of reports.
@@ -182,20 +192,20 @@ Override with: `make build VERSION=v1.0.0`
 
 ### Development Builds
 
-Non-release versions automatically set `extraFieldInfo.dev: true` for server-side filtering. A release version is a clean semver tag like `v1.2.3`, `v1.2.3-rc1`, or `v1.2.3+rke2r1`.
+Every report sends `extraTagInfo.dev` for server-side filtering. Non-release versions set it to `"true"`, release versions to `"false"`. A release version is a clean semver tag like `v1.2.3`, `v1.2.3-rc1`, or `v1.2.3+rke2r1`.
 
-| Condition | `dev` field |
-|-----------|-------------|
-| Clean release tag (`v1.2.3`) | absent |
-| Commits after tag (`v1.2.3-5-gabcdef`) | `true` |
-| Dirty working tree (`v1.2.3-dirty`) | `true` |
-| No tag (commit hash only) | `true` |
-| Version contains "dev" or "test" | `true` |
-| `SECURITY_RESPONDER_DEV=true` env | `true` |
+| Condition | `dev` tag |
+|-----------|-----------|
+| Clean release tag (`v1.2.3`) | `"false"` |
+| Commits after tag (`v1.2.3-5-gabcdef`) | `"true"` |
+| Dirty working tree (`v1.2.3-dirty`) | `"true"` |
+| No tag (commit hash only) | `"true"` |
+| Version contains "dev" or "test" | `"true"` |
+| `SECURITY_RESPONDER_DEV=true` env | `"true"` |
 
 Example:
 ```bash
-# Tagged release (no dev flag)
+# Tagged release (dev tag "false")
 git tag v0.1.0 && make build
 
 # Development build (dev flag set automatically)

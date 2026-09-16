@@ -40,6 +40,29 @@ func TestIsReleaseVersion(t *testing.T) {
 	}
 }
 
+func TestIsDevBuild(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		env     string
+		want    bool
+	}{
+		{"release", "v1.2.3", "", false},
+		{"release with env false", "v1.2.3", "false", false},
+		{"release forced dev", "v1.2.3", "true", true},
+		{"non-release", "v1.2.3-5-gabcdef0", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SECURITY_RESPONDER_DEV", tt.env)
+			if got := isDevBuild(tt.version); got != tt.want {
+				t.Errorf("isDevBuild(%q) with SECURITY_RESPONDER_DEV=%q = %v, want %v", tt.version, tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRun_OutsideCluster(t *testing.T) {
 	err := run()
 	if err == nil {

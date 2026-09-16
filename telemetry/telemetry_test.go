@@ -3,8 +3,10 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -214,8 +216,8 @@ func TestCollect_BasicCluster(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["mode"] != "recommended" {
-		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "recommended")
+	if data.ExtraTagInfo["mode"] != "recommended" {
+		t.Errorf("mode = %q, want %q", data.ExtraTagInfo["mode"], "recommended")
 	}
 	if data.ExtraTagInfo["clusteruuid"] != "test-cluster-uuid" {
 		t.Errorf("clusteruuid = %q, want %q", data.ExtraTagInfo["clusteruuid"], "test-cluster-uuid")
@@ -226,14 +228,14 @@ func TestCollect_BasicCluster(t *testing.T) {
 	if data.ExtraFieldInfo["agentNodeCount"] != 2 {
 		t.Errorf("agentNodeCount = %v, want 2", data.ExtraFieldInfo["agentNodeCount"])
 	}
-	if data.ExtraFieldInfo["os"] != "Ubuntu 22.04" {
-		t.Errorf("os = %v, want Ubuntu 22.04", data.ExtraFieldInfo["os"])
+	if data.ExtraTagInfo["os"] != "Ubuntu 22.04" {
+		t.Errorf("os = %v, want Ubuntu 22.04", data.ExtraTagInfo["os"])
 	}
-	if data.ExtraFieldInfo["arch"] != "amd64" {
-		t.Errorf("arch = %v, want amd64", data.ExtraFieldInfo["arch"])
+	if data.ExtraTagInfo["arch"] != "amd64" {
+		t.Errorf("arch = %v, want amd64", data.ExtraTagInfo["arch"])
 	}
-	if data.ExtraFieldInfo["node-info-consistent"] != true {
-		t.Errorf("node-info-consistent = %v, want true", data.ExtraFieldInfo["node-info-consistent"])
+	if data.ExtraTagInfo["node-info-consistent"] != "true" {
+		t.Errorf("node-info-consistent = %v, want true", data.ExtraTagInfo["node-info-consistent"])
 	}
 }
 
@@ -272,23 +274,25 @@ func TestCollect_NodeInfoInconsistent(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["node-info-consistent"] != false {
-		t.Errorf("node-info-consistent = %v, want false", data.ExtraFieldInfo["node-info-consistent"])
+	if data.ExtraTagInfo["node-info-consistent"] != "false" {
+		t.Errorf("node-info-consistent = %v, want false", data.ExtraTagInfo["node-info-consistent"])
 	}
 }
 
 func TestCollect_CNIDetection(t *testing.T) {
 	tests := []struct {
-		name        string
-		daemonSet   string
-		image       string
-		expectedCNI string
+		name            string
+		daemonSet       string
+		image           string
+		expectedCNI     string
+		expectedVersion string
 	}{
-		{"canal", "rke2-canal", "rancher/hardened-calico:v3.26.0", "canal"},
-		{"flannel", "kube-flannel-ds", "flannel/flannel:v0.22.0", "flannel"},
-		{"calico", "calico-node", "calico/node:v3.26.0", "calico"},
-		{"cilium", "cilium", "cilium/cilium:v1.14.0", "cilium"},
-		{"weave", "weave-net", "weaveworks/weave-kube:2.8.1", "weave"},
+		{"canal", "rke2-canal", "rancher/hardened-calico:v3.26.0", "canal", "v3.26.0"},
+		{"flannel", "kube-flannel-ds", "flannel/flannel:v0.22.0", "flannel", "v0.22.0"},
+		{"calico", "calico-node", "calico/node:v3.26.0", "calico", "v3.26.0"},
+		{"cilium", "cilium", "cilium/cilium:v1.14.0", "cilium", "v1.14.0"},
+		{"weave", "weave-net", "weaveworks/weave-kube:2.8.1", "weave", "2.8.1"},
+		{"untagged", "cilium", "cilium/cilium", "cilium", "unknown"},
 	}
 
 	for _, tt := range tests {
@@ -316,8 +320,11 @@ func TestCollect_CNIDetection(t *testing.T) {
 				t.Fatalf("Collect() error = %v", err)
 			}
 
-			if data.ExtraFieldInfo["cni-plugin"] != tt.expectedCNI {
-				t.Errorf("cni-plugin = %v, want %v", data.ExtraFieldInfo["cni-plugin"], tt.expectedCNI)
+			if data.ExtraTagInfo["cni-plugin"] != tt.expectedCNI {
+				t.Errorf("cni-plugin = %v, want %v", data.ExtraTagInfo["cni-plugin"], tt.expectedCNI)
+			}
+			if data.ExtraTagInfo["cni-version"] != tt.expectedVersion {
+				t.Errorf("cni-version = %v, want %v", data.ExtraTagInfo["cni-version"], tt.expectedVersion)
 			}
 		})
 	}
@@ -329,9 +336,11 @@ func TestCollect_IngressDetection(t *testing.T) {
 		deploymentName  string
 		image           string
 		expectedIngress string
+		expectedVersion string
 	}{
-		{"nginx", "rke2-ingress-nginx-controller", "rancher/nginx-ingress-controller:v1.9.0", "rke2-ingress-nginx"},
-		{"traefik", "traefik", "traefik:v2.10", "traefik"},
+		{"nginx", "rke2-ingress-nginx-controller", "rancher/nginx-ingress-controller:v1.9.0", "rke2-ingress-nginx", "v1.9.0"},
+		{"traefik", "traefik", "traefik:v2.10", "traefik", "v2.10"},
+		{"untagged", "traefik", "traefik", "traefik", "unknown"},
 	}
 
 	for _, tt := range tests {
@@ -359,8 +368,11 @@ func TestCollect_IngressDetection(t *testing.T) {
 				t.Fatalf("Collect() error = %v", err)
 			}
 
-			if data.ExtraFieldInfo["ingress-controller"] != tt.expectedIngress {
-				t.Errorf("ingress-controller = %v, want %v", data.ExtraFieldInfo["ingress-controller"], tt.expectedIngress)
+			if data.ExtraTagInfo["ingress-controller"] != tt.expectedIngress {
+				t.Errorf("ingress-controller = %v, want %v", data.ExtraTagInfo["ingress-controller"], tt.expectedIngress)
+			}
+			if data.ExtraTagInfo["ingress-version"] != tt.expectedVersion {
+				t.Errorf("ingress-version = %v, want %v", data.ExtraTagInfo["ingress-version"], tt.expectedVersion)
 			}
 		})
 	}
@@ -394,8 +406,8 @@ func TestCollect_GPUDetection(t *testing.T) {
 	if data.ExtraFieldInfo["gpuNodeCount"] != 1 {
 		t.Errorf("gpuNodeCount = %v, want 1", data.ExtraFieldInfo["gpuNodeCount"])
 	}
-	if data.ExtraFieldInfo["gpu-vendor"] != "nvidia" {
-		t.Errorf("gpu-vendor = %v, want nvidia", data.ExtraFieldInfo["gpu-vendor"])
+	if data.ExtraTagInfo["gpu-vendor"] != "nvidia" {
+		t.Errorf("gpu-vendor = %v, want nvidia", data.ExtraTagInfo["gpu-vendor"])
 	}
 }
 
@@ -429,14 +441,36 @@ func TestCollect_RancherManaged(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["rancher-managed"] != true {
-		t.Errorf("rancher-managed = %v, want true", data.ExtraFieldInfo["rancher-managed"])
+	if data.ExtraTagInfo["rancher-managed"] != "true" {
+		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
 	}
-	if data.ExtraFieldInfo["rancher-version"] != "v2.8.0" {
-		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraFieldInfo["rancher-version"])
+	if data.ExtraTagInfo["rancher-version"] != "v2.8.0" {
+		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraTagInfo["rancher-version"])
 	}
 	if data.ExtraFieldInfo["rancher-install-uuid"] != "rancher-install-uuid-123" {
 		t.Errorf("rancher-install-uuid = %v, want rancher-install-uuid-123", data.ExtraFieldInfo["rancher-install-uuid"])
+	}
+}
+
+func TestCollect_RancherManagedWithoutAgent(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
+	)
+
+	data, err := Collect(context.Background(), clientset, nil, "recommended")
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if data.ExtraTagInfo["rancher-managed"] != "true" {
+		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
+	}
+	if data.ExtraTagInfo["rancher-version"] != "unknown" {
+		t.Errorf("rancher-version = %v, want unknown", data.ExtraTagInfo["rancher-version"])
+	}
+	if _, ok := data.ExtraFieldInfo["rancher-install-uuid"]; ok {
+		t.Errorf("rancher-install-uuid should be omitted when empty, got %v", data.ExtraFieldInfo["rancher-install-uuid"])
 	}
 }
 
@@ -610,8 +644,8 @@ func TestCollect_GPUOperatorDetection(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["gpu-operator"] != "nvidia-gpu-operator" {
-		t.Errorf("gpu-operator = %v, want nvidia-gpu-operator", data.ExtraFieldInfo["gpu-operator"])
+	if data.ExtraTagInfo["gpu-operator"] != "nvidia-gpu-operator" {
+		t.Errorf("gpu-operator = %v, want nvidia-gpu-operator", data.ExtraTagInfo["gpu-operator"])
 	}
 }
 
@@ -639,8 +673,8 @@ func TestCollect_IngressAsDaemonSet(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["ingress-controller"] != "rke2-ingress-nginx" {
-		t.Errorf("ingress-controller = %v, want rke2-ingress-nginx", data.ExtraFieldInfo["ingress-controller"])
+	if data.ExtraTagInfo["ingress-controller"] != "rke2-ingress-nginx" {
+		t.Errorf("ingress-controller = %v, want rke2-ingress-nginx", data.ExtraTagInfo["ingress-controller"])
 	}
 }
 
@@ -678,8 +712,8 @@ func TestCollect_IPStackFromService(t *testing.T) {
 				t.Fatalf("Collect() error = %v", err)
 			}
 
-			if data.ExtraFieldInfo["ip-stack"] != tt.expected {
-				t.Errorf("ip-stack = %v, want %v", data.ExtraFieldInfo["ip-stack"], tt.expected)
+			if data.ExtraTagInfo["ip-stack"] != tt.expected {
+				t.Errorf("ip-stack = %v, want %v", data.ExtraTagInfo["ip-stack"], tt.expected)
 			}
 		})
 	}
@@ -699,8 +733,8 @@ func TestCollect_IPStackNoService(t *testing.T) {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["ip-stack"] != "unknown" {
-		t.Errorf("ip-stack = %v, want unknown", data.ExtraFieldInfo["ip-stack"])
+	if data.ExtraTagInfo["ip-stack"] != "unknown" {
+		t.Errorf("ip-stack = %v, want unknown", data.ExtraTagInfo["ip-stack"])
 	}
 }
 
@@ -754,8 +788,8 @@ func TestCollect_MinimalMode(t *testing.T) {
 	}
 
 	// Mode field should be set
-	if data.ExtraFieldInfo["mode"] != "minimal" {
-		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "minimal")
+	if data.ExtraTagInfo["mode"] != "minimal" {
+		t.Errorf("mode = %q, want %q", data.ExtraTagInfo["mode"], "minimal")
 	}
 
 	// Node counts should be -1 in minimal mode
@@ -784,24 +818,92 @@ func TestCollect_MinimalMode(t *testing.T) {
 	}
 
 	// Rancher-managed should still be present
-	if data.ExtraFieldInfo["rancher-managed"] != true {
-		t.Errorf("rancher-managed = %v, want true", data.ExtraFieldInfo["rancher-managed"])
+	if data.ExtraTagInfo["rancher-managed"] != "true" {
+		t.Errorf("rancher-managed = %v, want true", data.ExtraTagInfo["rancher-managed"])
 	}
 
-	// Rancher version and UUID should be empty strings in minimal mode
-	if data.ExtraFieldInfo["rancher-version"] != "" {
-		t.Errorf("rancher-version = %v, want empty string", data.ExtraFieldInfo["rancher-version"])
+	// Rancher version is redacted and UUID empty in minimal mode
+	if data.ExtraTagInfo["rancher-version"] != "redacted" {
+		t.Errorf("rancher-version = %v, want redacted", data.ExtraTagInfo["rancher-version"])
 	}
 	if data.ExtraFieldInfo["rancher-install-uuid"] != "" {
 		t.Errorf("rancher-install-uuid = %v, want empty string", data.ExtraFieldInfo["rancher-install-uuid"])
 	}
 
 	// OS info should still be present
-	if data.ExtraFieldInfo["os"] != "test" {
-		t.Errorf("os = %v, want test", data.ExtraFieldInfo["os"])
+	if data.ExtraTagInfo["os"] != "test" {
+		t.Errorf("os = %v, want test", data.ExtraTagInfo["os"])
 	}
-	if data.ExtraFieldInfo["arch"] != "amd64" {
-		t.Errorf("arch = %v, want amd64", data.ExtraFieldInfo["arch"])
+	if data.ExtraTagInfo["arch"] != "amd64" {
+		t.Errorf("arch = %v, want amd64", data.ExtraTagInfo["arch"])
+	}
+}
+
+func TestCollect_TagsAndFields(t *testing.T) {
+	tags := func(mode, rancherVersion string) map[string]string {
+		return map[string]string{
+			"mode":                    mode,
+			"clusteruuid":             "uuid",
+			"operating-system":        "unknown",
+			"os":                      "unknown",
+			"arch":                    "unknown",
+			"selinux":                 "unknown",
+			"node-info-consistent":    "true",
+			"gpu-vendor":              "none",
+			"cni-plugin":              "unknown",
+			"cni-version":             "unknown",
+			"ingress-controller":      "none",
+			"ingress-version":         "none",
+			"gpu-operator":            "none",
+			"gpu-operator-version":    "none",
+			"rancher-managed":         "false",
+			"rancher-version":         rancherVersion,
+			"rancher-prime":           "unknown",
+			"system-default-registry": "unknown",
+			"ip-stack":                "unknown",
+		}
+	}
+	tests := []struct {
+		mode       string
+		wantTags   map[string]string
+		wantFields map[string]interface{}
+	}{
+		{
+			mode:     "recommended",
+			wantTags: tags("recommended", "none"),
+			wantFields: map[string]interface{}{
+				"serverNodeCount": 0, "agentNodeCount": 0, "gpuNodeCount": 0,
+				"serverCPU": int64(0), "agentCPU": int64(0), "serverMemory": int64(0), "agentMemory": int64(0),
+				"kernel": "",
+			},
+		},
+		{
+			mode:     "minimal",
+			wantTags: tags("minimal", "redacted"),
+			wantFields: map[string]interface{}{
+				"serverNodeCount": -1, "agentNodeCount": -1, "gpuNodeCount": -1,
+				"serverCPU": int64(-1), "agentCPU": int64(-1), "serverMemory": int64(-1), "agentMemory": int64(-1),
+				"kernel": "", "rancher-install-uuid": "",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			clientset := fake.NewClientset(
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+			)
+			data, err := Collect(context.Background(), clientset, nil, tt.mode)
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+			if !maps.Equal(data.ExtraTagInfo, tt.wantTags) {
+				t.Errorf("ExtraTagInfo = %v, want %v", data.ExtraTagInfo, tt.wantTags)
+			}
+			if !reflect.DeepEqual(data.ExtraFieldInfo, tt.wantFields) {
+				t.Errorf("ExtraFieldInfo = %v, want %v", data.ExtraFieldInfo, tt.wantFields)
+			}
+		})
 	}
 }
 
@@ -845,8 +947,8 @@ func TestCollect_RecommendedModeIncludesRancherDetails(t *testing.T) {
 	}
 
 	// Mode field should be set
-	if data.ExtraFieldInfo["mode"] != "recommended" {
-		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "recommended")
+	if data.ExtraTagInfo["mode"] != "recommended" {
+		t.Errorf("mode = %q, want %q", data.ExtraTagInfo["mode"], "recommended")
 	}
 
 	// Node counts should have actual values
@@ -861,8 +963,8 @@ func TestCollect_RecommendedModeIncludesRancherDetails(t *testing.T) {
 	}
 
 	// Rancher details should be present in recommended mode
-	if data.ExtraFieldInfo["rancher-version"] != "v2.8.0" {
-		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraFieldInfo["rancher-version"])
+	if data.ExtraTagInfo["rancher-version"] != "v2.8.0" {
+		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraTagInfo["rancher-version"])
 	}
 	if data.ExtraFieldInfo["rancher-install-uuid"] != "test-uuid" {
 		t.Errorf("rancher-install-uuid = %v, want test-uuid", data.ExtraFieldInfo["rancher-install-uuid"])
@@ -874,12 +976,14 @@ var (
 	primeScheme        = runtime.NewScheme()
 )
 
+// newHelmChart mirrors RKE2, which injects both keys together, so an empty
+// registry is still set whenever primeEnabled is.
 func newHelmChart(name, primeEnabled, registry string) *unstructured.Unstructured {
 	set := map[string]interface{}{}
 	if primeEnabled != "" {
 		set["global.prime.enabled"] = primeEnabled
 	}
-	if registry != "" {
+	if primeEnabled != "" || registry != "" {
 		set["global.systemDefaultRegistry"] = registry
 	}
 	spec := map[string]interface{}{"chart": name}
@@ -937,7 +1041,7 @@ func TestDetectPrime(t *testing.T) {
 				newHelmChart("rke2-coredns", "false", ""),
 			),
 			wantPrime:    "false",
-			wantRegistry: "",
+			wantRegistry: "none",
 		},
 		{
 			name: "key absent on all charts",
@@ -951,8 +1055,8 @@ func TestDetectPrime(t *testing.T) {
 		{
 			name: "HA mismatch positive wins",
 			client: newDynClient(
-				newHelmChart("rke2-coredns", "true", "registry.rancher.com"),
 				newHelmChart("rke2-canal", "false", ""),
+				newHelmChart("rke2-coredns", "true", "registry.rancher.com"),
 			),
 			wantPrime:    "true",
 			wantRegistry: "registry.rancher.com",
@@ -1010,38 +1114,38 @@ func runPrimeCollect(t *testing.T, mode string, charts ...*unstructured.Unstruct
 
 func TestCollect_PrimeDetected(t *testing.T) {
 	data := runPrimeCollect(t, "recommended", newHelmChart("rke2-coredns", "true", "registry.rancher.com"))
-	if data.ExtraFieldInfo["rancher-prime"] != "true" {
-		t.Errorf("rancher-prime = %v, want %q", data.ExtraFieldInfo["rancher-prime"], "true")
+	if data.ExtraTagInfo["rancher-prime"] != "true" {
+		t.Errorf("rancher-prime = %v, want %q", data.ExtraTagInfo["rancher-prime"], "true")
 	}
-	if data.ExtraFieldInfo["system-default-registry"] != "registry.rancher.com" {
-		t.Errorf("system-default-registry = %v, want %q", data.ExtraFieldInfo["system-default-registry"], "registry.rancher.com")
+	if data.ExtraTagInfo["system-default-registry"] != "registry.rancher.com" {
+		t.Errorf("system-default-registry = %v, want %q", data.ExtraTagInfo["system-default-registry"], "registry.rancher.com")
 	}
 }
 
 func TestCollect_PrimeNotDetected(t *testing.T) {
 	data := runPrimeCollect(t, "recommended", newHelmChart("rke2-coredns", "false", ""))
-	if data.ExtraFieldInfo["rancher-prime"] != "false" {
-		t.Errorf("rancher-prime = %v, want %q", data.ExtraFieldInfo["rancher-prime"], "false")
+	if data.ExtraTagInfo["rancher-prime"] != "false" {
+		t.Errorf("rancher-prime = %v, want %q", data.ExtraTagInfo["rancher-prime"], "false")
 	}
-	if _, ok := data.ExtraFieldInfo["system-default-registry"]; ok {
-		t.Errorf("system-default-registry should be omitted when empty, got %v", data.ExtraFieldInfo["system-default-registry"])
+	if data.ExtraTagInfo["system-default-registry"] != "none" {
+		t.Errorf("system-default-registry = %v, want %q", data.ExtraTagInfo["system-default-registry"], "none")
 	}
 }
 
 func TestCollect_PrimeUnknown(t *testing.T) {
 	data := runPrimeCollect(t, "recommended")
-	if data.ExtraFieldInfo["rancher-prime"] != "unknown" {
-		t.Errorf("rancher-prime = %v, want %q", data.ExtraFieldInfo["rancher-prime"], "unknown")
+	if data.ExtraTagInfo["rancher-prime"] != "unknown" {
+		t.Errorf("rancher-prime = %v, want %q", data.ExtraTagInfo["rancher-prime"], "unknown")
 	}
 }
 
 func TestCollect_PrimeMinimalMode(t *testing.T) {
 	data := runPrimeCollect(t, "minimal", newHelmChart("rke2-coredns", "true", "registry.rancher.com"))
-	if data.ExtraFieldInfo["rancher-prime"] != "true" {
-		t.Errorf("rancher-prime (minimal) = %v, want %q", data.ExtraFieldInfo["rancher-prime"], "true")
+	if data.ExtraTagInfo["rancher-prime"] != "true" {
+		t.Errorf("rancher-prime (minimal) = %v, want %q", data.ExtraTagInfo["rancher-prime"], "true")
 	}
-	if data.ExtraFieldInfo["system-default-registry"] != "registry.rancher.com" {
-		t.Errorf("system-default-registry (minimal) = %v, want %q", data.ExtraFieldInfo["system-default-registry"], "registry.rancher.com")
+	if data.ExtraTagInfo["system-default-registry"] != "registry.rancher.com" {
+		t.Errorf("system-default-registry (minimal) = %v, want %q", data.ExtraTagInfo["system-default-registry"], "registry.rancher.com")
 	}
 }
 
